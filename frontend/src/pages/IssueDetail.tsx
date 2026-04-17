@@ -270,6 +270,11 @@ const IssueDetail = () => {
                           <span className="text-xs text-muted-foreground ml-auto">
                             {formatDistanceToNow(new Date(t.created_at), { addSuffix: true })}
                           </span>
+                          {t.notes && (
+                            <p className="w-full text-xs leading-relaxed text-muted-foreground">
+                              {t.notes}
+                            </p>
+                          )}
                         </div>
                       );})}
                     </div>

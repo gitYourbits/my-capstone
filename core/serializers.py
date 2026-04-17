@@ -333,7 +333,16 @@ class IssueDetailSerializer(serializers.ModelSerializer):
 
     def get_workflow_transitions_public(self, obj):
         transitions = obj.workflow_transitions.all().order_by('-created_at')[:5]
-        return [{'to_stage': t.to_stage, 'assigned_to_name': t.assigned_to.get_full_name() or t.assigned_to.username if t.assigned_to else None, 'performed_by_name': t.performed_by.get_full_name() or t.performed_by.username, 'created_at': t.created_at.isoformat()} for t in transitions]
+        return [
+            {
+                'to_stage': t.to_stage,
+                'assigned_to_name': t.assigned_to.get_full_name() or t.assigned_to.username if t.assigned_to else None,
+                'performed_by_name': t.performed_by.get_full_name() or t.performed_by.username,
+                'created_at': t.created_at.isoformat(),
+                'notes': t.notes or '',
+            }
+            for t in transitions
+        ]
         read_only_fields = [
             'id', 'author', 'upvotes_count', 'downvotes_count', 'comments_count',
             'views_count', 'created_at', 'updated_at'
