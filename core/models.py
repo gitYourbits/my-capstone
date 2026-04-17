@@ -4,6 +4,7 @@ from django.utils import timezone
 from django.core.validators import FileExtensionValidator
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+from django.db.models import Q
 from PIL import Image
 import os
 from io import BytesIO
@@ -113,8 +114,8 @@ class Category(models.Model):
 
 class Tag(models.Model):
     """Hashtags/Tags for issues"""
-    name = models.CharField(max_length=50, unique=True)
-    slug = models.SlugField(max_length=50, unique=True)
+    name = models.CharField(max_length=100, unique=True)
+    slug = models.SlugField(max_length=120, unique=True)
     usage_count = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -183,6 +184,7 @@ class Issue(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     resolved_at = models.DateTimeField(null=True, blank=True)
+    submission_token = models.CharField(max_length=64, null=True, blank=True, db_index=True)
 
     class Meta:
         ordering = ['-created_at']
@@ -191,6 +193,13 @@ class Issue(models.Model):
             models.Index(fields=['state', 'district', 'city']),
             models.Index(fields=['category']),
             models.Index(fields=['status']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['author', 'submission_token'],
+                condition=Q(submission_token__isnull=False),
+                name='unique_issue_submission_per_author'
+            )
         ]
 
     def __str__(self):

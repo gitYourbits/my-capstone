@@ -7,9 +7,11 @@ import Index from "./pages/Index";
 import Feed from "./pages/Feed";
 import IssueDetail from "./pages/IssueDetail";
 import CreateIssue from "./pages/CreateIssue";
+import EditIssue from "./pages/EditIssue";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import NotFound from "./pages/NotFound";
+import Profile from "./pages/Profile";
 import { AdminLayout } from "./components/AdminLayout";
 import AdminDashboard from "./pages/admin/AdminDashboard";
 import AdminGrievances from "./pages/admin/AdminGrievances";
@@ -28,7 +30,9 @@ const App = () => (
           <Route path="/" element={<Index />} />
           <Route path="/feed" element={<Feed />} />
           <Route path="/issue/:id" element={<IssueDetail />} />
+          <Route path="/issue/:id/edit" element={<EditIssue />} />
           <Route path="/create" element={<CreateIssue />} />
+          <Route path="/profile" element={<Profile />} />
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           <Route path="/admin" element={<AdminLayout />}>

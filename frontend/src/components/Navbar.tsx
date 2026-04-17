@@ -93,7 +93,7 @@ export const Navbar = () => {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={() => navigate("/feed")}>
+                  <DropdownMenuItem onClick={() => navigate("/profile")}>
                     My Issues
                   </DropdownMenuItem>
                   {isStaff && (

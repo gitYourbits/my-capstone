@@ -376,6 +376,7 @@ export const issueAPI = {
     city?: number;
     scope: string;
     tags?: string[];
+    submission_token?: string;
   }, mediaFiles: File[] = []) => {
     const formData = new FormData();
     formData.append('title', data.title);
@@ -393,6 +394,7 @@ export const issueAPI = {
         }
       });
     }
+    if (data.submission_token) formData.append('submission_token', data.submission_token);
 
     // Add media files
     mediaFiles.forEach((file, index) => {
@@ -417,6 +419,39 @@ export const issueAPI = {
     }
 
     return response.json();
+  },
+
+  update: async (id: number, data: {
+    title: string;
+    description: string;
+    is_anonymous: boolean;
+    category: number;
+    state?: number;
+    district?: number;
+    city?: number;
+    scope: string;
+    tags?: string[];
+  }) => {
+    return apiRequest<any>(`/issues/${id}/`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    });
+  },
+
+  delete: async (id: number) => {
+    const response = await fetch(`${API_BASE_URL}/issues/${id}/`, {
+      method: 'DELETE',
+      headers: getHeaders(),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(error.detail || error.message || 'Failed to delete issue');
+    }
+  },
+
+  getMine: async (page?: number) => {
+    const query = page ? `?page=${page}` : '';
+    return apiRequest<{ count: number; next: string | null; previous: string | null; results: any[] }>(`/issues/mine/${query}`);
   },
 
   vote: async (id: number, voteType: 'upvote' | 'downvote') => {

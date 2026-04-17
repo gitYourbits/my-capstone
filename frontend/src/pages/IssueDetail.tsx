@@ -6,7 +6,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { ArrowUp, ArrowDown, User, UserCheck, GitBranch } from "lucide-react";
+import { ArrowUp, ArrowDown, User, UserCheck, GitBranch, Pencil, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { issueAPI, commentAPI } from "@/lib/api";
 import { formatDistanceToNow } from "date-fns";
@@ -22,6 +22,7 @@ const IssueDetail = () => {
   const [commentText, setCommentText] = useState("");
   const [isAnonymous, setIsAnonymous] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     if (id) {
@@ -124,6 +125,29 @@ const IssueDetail = () => {
     }
   };
 
+  const handleDeleteIssue = async () => {
+    if (!issue?.is_owner || isDeleting) return;
+    const confirmed = window.confirm("Are you sure you want to delete this issue? This action cannot be undone.");
+    if (!confirmed) return;
+    setIsDeleting(true);
+    try {
+      await issueAPI.delete(issue.id);
+      toast({
+        title: "Issue deleted",
+        description: "The issue has been permanently removed.",
+      });
+      navigate("/profile");
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to delete issue",
+        variant: "destructive",
+      });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-background">
@@ -159,6 +183,18 @@ const IssueDetail = () => {
       
       <div className="container px-4 py-6">
         <div className="mx-auto max-w-4xl">
+          {issue?.is_owner && (
+            <div className="mb-4 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => navigate(`/issue/${issue.id}/edit`)}>
+                <Pencil className="mr-2 h-4 w-4" />
+                Edit
+              </Button>
+              <Button variant="destructive" onClick={handleDeleteIssue} disabled={isDeleting}>
+                <Trash2 className="mr-2 h-4 w-4" />
+                {isDeleting ? "Deleting..." : "Delete"}
+              </Button>
+            </div>
+          )}
           <IssueCard issue={issue} isDetail onVoteChange={loadIssue} />
 
           {/* Media Gallery */}

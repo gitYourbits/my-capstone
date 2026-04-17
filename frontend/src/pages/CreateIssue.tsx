@@ -7,7 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Upload, X, Image, Video, Mic, File } from "lucide-react";
+import { X, Image, Video, Mic, File, Camera } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { issueAPI, locationAPI, categoryAPI } from "@/lib/api";
@@ -33,6 +33,10 @@ const CreateIssue = () => {
   const [cities, setCities] = useState<any[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isCameraLikelyAvailable, setIsCameraLikelyAvailable] = useState(false);
+  const [submissionToken] = useState(
+    () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`)
+  );
 
   useEffect(() => {
     // Check if user is authenticated
@@ -47,6 +51,13 @@ const CreateIssue = () => {
     }
 
     loadInitialData();
+  }, []);
+
+  useEffect(() => {
+    const ua = navigator.userAgent || "";
+    const isMobileLike = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+    const hasMediaDevices = !!navigator.mediaDevices?.getUserMedia;
+    setIsCameraLikelyAvailable(isMobileLike && hasMediaDevices);
   }, []);
 
   useEffect(() => {
@@ -119,12 +130,60 @@ const CreateIssue = () => {
     }
   };
 
+  const fileTypeConfig = {
+    image: {
+      maxMB: 15,
+      accept: ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'],
+      label: 'image'
+    },
+    video: {
+      maxMB: 80,
+      accept: ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/webm'],
+      label: 'video'
+    },
+    audio: {
+      maxMB: 30,
+      accept: ['audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/mp4', 'audio/ogg'],
+      label: 'audio'
+    },
+  } as const;
+
+  const validateFiles = (files: File[], type: 'image' | 'video' | 'audio') => {
+    const config = fileTypeConfig[type];
+    const validFiles: File[] = [];
+    for (const file of files) {
+      const isAllowedType = config.accept.includes(file.type);
+      const isAllowedSize = file.size <= config.maxMB * 1024 * 1024;
+      if (!isAllowedType) {
+        toast({
+          title: "Unsupported file format",
+          description: `${file.name} is not a valid ${config.label} format.`,
+          variant: "destructive",
+        });
+        continue;
+      }
+      if (!isAllowedSize) {
+        toast({
+          title: "File too large",
+          description: `${file.name} exceeds ${config.maxMB} MB.`,
+          variant: "destructive",
+        });
+        continue;
+      }
+      validFiles.push(file);
+    }
+    return validFiles;
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, type: 'image' | 'video' | 'audio') => {
     const files = e.target.files;
     if (files && files.length > 0) {
-      const newFiles = Array.from(files);
-      setUploadedFiles([...uploadedFiles, ...newFiles]);
+      const newFiles = validateFiles(Array.from(files), type);
+      if (newFiles.length > 0) {
+        setUploadedFiles([...uploadedFiles, ...newFiles]);
+      }
     }
+    e.target.value = '';
   };
 
   const removeFile = (index: number) => {
@@ -133,6 +192,7 @@ const CreateIssue = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isLoading) return;
     setIsLoading(true);
 
     try {
@@ -152,15 +212,23 @@ const CreateIssue = () => {
         city: formData.city ? parseInt(formData.city) : undefined,
         scope: formData.scope,
         tags: tags,
+        submission_token: submissionToken,
       };
 
-      await issueAPI.create(issueData, uploadedFiles);
-      
-      toast({
-        title: "Success!",
-        description: "Your issue has been posted successfully.",
-      });
-      navigate("/feed");
+      const response = await issueAPI.create(issueData, uploadedFiles);
+
+      if (response?.duplicate_submission) {
+        toast({
+          title: "Already submitted",
+          description: "Your previous upload already succeeded. Opening that issue.",
+        });
+      } else {
+        toast({
+          title: "Success!",
+          description: "Your issue has been posted successfully.",
+        });
+      }
+      navigate(response?.id ? `/issue/${response.id}` : "/feed");
     } catch (error: any) {
       toast({
         title: "Error",
@@ -339,7 +407,7 @@ const CreateIssue = () => {
                   onChange={(e) => setFormData({ ...formData, tags: e.target.value })}
                 />
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Add relevant tags to help others find your issue
+                  Add relevant tags to help others find your issue (up to 100 chars per tag)
                 </p>
               </div>
 
@@ -368,6 +436,39 @@ const CreateIssue = () => {
                         </span>
                       </Button>
                     </label>
+                    {isCameraLikelyAvailable ? (
+                      <label>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          onChange={(e) => handleFileUpload(e, 'image')}
+                          className="hidden"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="gap-2"
+                          asChild
+                        >
+                          <span>
+                            <Camera className="h-4 w-4" />
+                            Camera
+                          </span>
+                        </Button>
+                      </label>
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="gap-2"
+                        disabled
+                        title="Direct camera capture is available on mobile browsers."
+                      >
+                        <Camera className="h-4 w-4" />
+                        Camera (Mobile)
+                      </Button>
+                    )}
                     <label>
                       <input
                         type="file"

@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
+from django.utils.text import slugify
 from .models import (
     UserProfile, State, District, City, Category, Tag, Issue,
     Media, Comment, Vote, IssueView, IssueAdminNote,
@@ -221,6 +222,8 @@ class IssueListSerializer(serializers.ModelSerializer):
     
     assigned_to_name = serializers.SerializerMethodField()
     workflow_stage_label = serializers.SerializerMethodField()
+    is_owner = serializers.SerializerMethodField()
+    top_comments = serializers.SerializerMethodField()
 
     class Meta:
         model = Issue
@@ -229,7 +232,7 @@ class IssueListSerializer(serializers.ModelSerializer):
             'category', 'category_name', 'location', 'tags', 'first_image',
             'upvotes_count', 'downvotes_count', 'comments_count', 'score',
             'status', 'scope', 'created_at', 'user_vote',
-            'assigned_to_name', 'workflow_stage', 'workflow_stage_label'
+            'assigned_to_name', 'workflow_stage', 'workflow_stage_label', 'is_owner', 'top_comments'
         ]
 
     def get_assigned_to_name(self, obj):
@@ -256,8 +259,8 @@ class IssueListSerializer(serializers.ModelSerializer):
         first_media = obj.media_files.filter(media_type='image').first()
         if first_media:
             request = self.context.get('request')
-            # Prefer thumbnail if available, otherwise use full image
-            image_url = first_media.thumbnail.url if first_media.thumbnail else first_media.file.url
+            # Use original image in cards to prevent low-res thumbnail upscaling artifacts.
+            image_url = first_media.file.url
             if request:
                 return request.build_absolute_uri(image_url)
             return image_url
@@ -273,6 +276,23 @@ class IssueListSerializer(serializers.ModelSerializer):
             if vote:
                 return vote.vote_type
         return None
+
+    def get_is_owner(self, obj):
+        request = self.context.get('request')
+        return bool(request and request.user.is_authenticated and obj.author_id == request.user.id)
+
+    def get_top_comments(self, obj):
+        feed_comments = getattr(obj, 'feed_comments', [])
+        top_two = feed_comments[:2]
+        return [
+            {
+                'id': c.id,
+                'author_name': 'Anonymous' if c.is_anonymous else (c.author.get_full_name() or c.author.username),
+                'content': c.content,
+                'upvotes_count': c.upvotes_count,
+            }
+            for c in top_two
+        ]
 
 
 class IssueDetailSerializer(serializers.ModelSerializer):
@@ -290,6 +310,7 @@ class IssueDetailSerializer(serializers.ModelSerializer):
     assigned_to_name = serializers.SerializerMethodField()
     workflow_stage_label = serializers.SerializerMethodField()
     workflow_transitions_public = serializers.SerializerMethodField()
+    is_owner = serializers.SerializerMethodField()
 
     class Meta:
         model = Issue
@@ -299,7 +320,7 @@ class IssueDetailSerializer(serializers.ModelSerializer):
             'upvotes_count', 'downvotes_count', 'comments_count', 'views_count',
             'score', 'trending_score', 'status', 'scope', 'is_featured',
             'is_verified', 'created_at', 'updated_at', 'resolved_at', 'user_vote',
-            'assigned_to_name', 'workflow_stage', 'workflow_stage_label', 'workflow_transitions_public'
+            'assigned_to_name', 'workflow_stage', 'workflow_stage_label', 'workflow_transitions_public', 'is_owner'
         ]
 
     def get_assigned_to_name(self, obj):
@@ -363,6 +384,10 @@ class IssueDetailSerializer(serializers.ModelSerializer):
                 return vote.vote_type
         return None
 
+    def get_is_owner(self, obj):
+        request = self.context.get('request')
+        return bool(request and request.user.is_authenticated and obj.author_id == request.user.id)
+
 
 class IssueCreateSerializer(serializers.ModelSerializer):
     """Issue Create/Update Serializer"""
@@ -372,12 +397,13 @@ class IssueCreateSerializer(serializers.ModelSerializer):
         allow_empty=True,
         write_only=True  # Important: don't try to serialize this field in response
     )
+    submission_token = serializers.CharField(required=False, allow_blank=False, max_length=64, write_only=True)
     
     class Meta:
         model = Issue
         fields = [
             'id', 'title', 'description', 'is_anonymous', 'category', 'state', 'district', 'city',
-            'scope', 'tags', 'created_at'
+            'scope', 'tags', 'submission_token', 'created_at'
         ]
         read_only_fields = ['id', 'created_at']
     
@@ -409,10 +435,11 @@ class IssueCreateSerializer(serializers.ModelSerializer):
         
         # Handle tags
         for tag_name in tags_data:
-            if tag_name:  # Skip empty tags
+            clean_name = self._normalize_tag_name(tag_name)
+            if clean_name:  # Skip empty tags
                 tag, created = Tag.objects.get_or_create(
-                    name=tag_name.lower().strip(),
-                    defaults={'slug': tag_name.lower().strip().replace(' ', '-')}
+                    name=clean_name,
+                    defaults={'slug': self._generate_unique_slug(clean_name)}
                 )
                 issue.tags.add(tag)
                 if created:
@@ -424,6 +451,7 @@ class IssueCreateSerializer(serializers.ModelSerializer):
         return issue
     
     def update(self, instance, validated_data):
+        validated_data.pop('submission_token', None)
         tags_data = validated_data.pop('tags', None)
         
         for attr, value in validated_data.items():
@@ -434,9 +462,12 @@ class IssueCreateSerializer(serializers.ModelSerializer):
         if tags_data is not None:
             instance.tags.clear()
             for tag_name in tags_data:
+                clean_name = self._normalize_tag_name(tag_name)
+                if not clean_name:
+                    continue
                 tag, created = Tag.objects.get_or_create(
-                    name=tag_name.lower().strip(),
-                    defaults={'slug': tag_name.lower().strip().replace(' ', '-')}
+                    name=clean_name,
+                    defaults={'slug': self._generate_unique_slug(clean_name)}
                 )
                 instance.tags.add(tag)
                 if created:
@@ -447,6 +478,38 @@ class IssueCreateSerializer(serializers.ModelSerializer):
         
         return instance
 
+    def validate_tags(self, value):
+        normalized = []
+        seen = set()
+        for raw_tag in value or []:
+            clean_name = self._normalize_tag_name(raw_tag)
+            if not clean_name:
+                continue
+            if len(clean_name) > 100:
+                raise serializers.ValidationError("Each tag can be up to 100 characters.")
+            if clean_name in seen:
+                continue
+            seen.add(clean_name)
+            normalized.append(clean_name)
+        if len(normalized) > 15:
+            raise serializers.ValidationError("You can add up to 15 tags per issue.")
+        return normalized
+
+    def _normalize_tag_name(self, raw_tag):
+        if not raw_tag:
+            return ""
+        return " ".join(str(raw_tag).strip().lower().split())
+
+    def _generate_unique_slug(self, tag_name):
+        base_slug = slugify(tag_name)[:120] or tag_name.replace(" ", "-")[:120]
+        slug_candidate = base_slug
+        counter = 2
+        while Tag.objects.filter(slug=slug_candidate).exists():
+            suffix = f"-{counter}"
+            slug_candidate = f"{base_slug[:120 - len(suffix)]}{suffix}"
+            counter += 1
+        return slug_candidate
+
 
 class IssueAdminNoteSerializer(serializers.ModelSerializer):
     """Admin note on an issue"""
@@ -455,7 +518,7 @@ class IssueAdminNoteSerializer(serializers.ModelSerializer):
     class Meta:
         model = IssueAdminNote
         fields = ['id', 'issue', 'author', 'author_name', 'note_type', 'content', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'author', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'issue', 'author', 'created_at', 'updated_at']
 
     def get_author_name(self, obj):
         return obj.author.get_full_name() or obj.author.username

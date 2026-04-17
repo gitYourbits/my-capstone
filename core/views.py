@@ -2,16 +2,18 @@ from rest_framework import viewsets, status, filters, serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny, IsAuthenticatedOrReadOnly
-from .permissions import IsAdminUser
+from .permissions import IsAdminUser, IsAuthorOrReadOnly
 from rest_framework.views import APIView
-from django.db.models import Q, Count, F, ExpressionWrapper, FloatField, DurationField
-from django.db.models.functions import Extract, Now, Cast
+from django.db.models import Q, Count, F, ExpressionWrapper, FloatField, DurationField, Value, Case, When, Prefetch
+from django.db.models.functions import Cast
+from django.db import DatabaseError, transaction, IntegrityError
 from django.utils import timezone
 from datetime import timedelta
 from django.contrib.auth.models import User
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+import logging
 
 from .models import (
     UserProfile, State, District, City, Category, Tag, Issue,
@@ -195,6 +197,10 @@ class IssueViewSet(viewsets.ModelViewSet):
     ordering_fields = ['created_at', 'upvotes_count', 'comments_count', 'trending_score']
     ordering = ['-created_at']
     filterset_fields = ['category', 'state', 'district', 'city', 'scope', 'status']
+    allowed_media_extensions = {'jpg', 'jpeg', 'png', 'gif', 'webp', 'mp4', 'mov', 'avi', 'webm', 'mp3', 'wav', 'm4a', 'ogg'}
+    image_extensions = {'jpg', 'jpeg', 'png', 'gif', 'webp'}
+    video_extensions = {'mp4', 'mov', 'avi', 'webm'}
+    audio_extensions = {'mp3', 'wav', 'm4a', 'ogg'}
 
     def get_serializer_class(self):
         if self.action == 'list':
@@ -204,6 +210,11 @@ class IssueViewSet(viewsets.ModelViewSet):
         elif self.action == 'retrieve':
             return IssueDetailSerializer
         return IssueDetailSerializer
+
+    def get_permissions(self):
+        if self.action in ['update', 'partial_update', 'destroy']:
+            return [IsAuthenticated(), IsAuthorOrReadOnly()]
+        return [permission() for permission in self.permission_classes]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -234,17 +245,27 @@ class IssueViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(status=status_filter)
         
         # Sort options
-        sort_by = self.request.query_params.get('sort_by', None)
+        sort_by = getattr(self, '_forced_sort_by', None) or self.request.query_params.get('sort_by', None)
         if sort_by == 'trending':
-            # Use SQLite's julianday function to calculate hours since creation
-            # This works for SQLite (development) and can be adapted for PostgreSQL in production
-            queryset = queryset.extra(
-                select={
-                    'trending_score_calc': """
-                        CAST((upvotes_count - downvotes_count + comments_count * 2) AS REAL) / 
-                        POWER(1.0 + CAST((julianday('now') - julianday(created_at)) * 24.0 AS REAL), 0.5)
-                    """
-                }
+            now = timezone.now()
+            engagement_expr = ExpressionWrapper(
+                F('upvotes_count') - F('downvotes_count') + (F('comments_count') * Value(2.0)),
+                output_field=FloatField(),
+            )
+            queryset = queryset.annotate(
+                engagement_score=engagement_expr,
+                recency_weight=Case(
+                    When(created_at__gte=now - timedelta(days=1), then=Value(1.0)),
+                    When(created_at__gte=now - timedelta(days=7), then=Value(0.75)),
+                    When(created_at__gte=now - timedelta(days=30), then=Value(0.5)),
+                    default=Value(0.3),
+                    output_field=FloatField(),
+                ),
+            ).annotate(
+                trending_score_calc=ExpressionWrapper(
+                    F('engagement_score') * F('recency_weight'),
+                    output_field=FloatField(),
+                )
             ).order_by('-trending_score_calc', '-created_at')
         elif sort_by == 'votes':
             queryset = queryset.annotate(
@@ -255,44 +276,53 @@ class IssueViewSet(viewsets.ModelViewSet):
         elif sort_by == 'recent':
             queryset = queryset.order_by('-created_at')
         
-        return queryset.select_related('author', 'category', 'state', 'district', 'city', 'assigned_to').prefetch_related('tags', 'media_files', 'workflow_transitions')
+        return queryset.select_related('author', 'category', 'state', 'district', 'city', 'assigned_to').prefetch_related(
+            'tags',
+            'media_files',
+            'workflow_transitions',
+            Prefetch(
+                'comments',
+                queryset=Comment.objects.filter(parent=None, is_deleted=False).select_related('author').order_by('-upvotes_count', '-created_at'),
+                to_attr='feed_comments',
+            ),
+        )
+
+    def list(self, request, *args, **kwargs):
+        """
+        Defensive fallback: if trending annotation fails on any DB/backend edge case,
+        gracefully fall back to recent instead of returning 500.
+        """
+        try:
+            return super().list(request, *args, **kwargs)
+        except DatabaseError as exc:
+            sort_by = request.query_params.get('sort_by')
+            if sort_by == 'trending':
+                logger = logging.getLogger(__name__)
+                logger.exception("Trending query failed; falling back to recent ordering.", exc_info=exc)
+                self._forced_sort_by = 'recent'
+                try:
+                    return super().list(request, *args, **kwargs)
+                finally:
+                    self._forced_sort_by = None
+            raise
 
     def perform_create(self, serializer):
-        import logging
         logger = logging.getLogger(__name__)
-        
-        try:
-            issue = serializer.save(author=self.request.user)
+
+        validated_media = self._validate_media_files()
+        submission_token = serializer.validated_data.pop('submission_token', None)
+
+        with transaction.atomic():
+            issue = serializer.save(author=self.request.user, submission_token=submission_token)
             logger.info(f"Issue created successfully: {issue.id}")
-            
-            # Handle media files
-            media_files = []
-            for key, file in self.request.FILES.items():
-                if key.startswith('media_') or key == 'file':
-                    try:
-                        # Determine media type from file extension
-                        file_ext = file.name.split('.')[-1].lower()
-                        if file_ext in ['jpg', 'jpeg', 'png', 'gif', 'webp']:
-                            media_type = 'image'
-                        elif file_ext in ['mp4', 'mov', 'avi', 'webm']:
-                            media_type = 'video'
-                        elif file_ext in ['mp3', 'wav', 'm4a', 'ogg']:
-                            media_type = 'audio'
-                        else:
-                            media_type = 'image'  # Default
-                        
-                        media = Media.objects.create(
-                            issue=issue,
-                            file=file,
-                            media_type=media_type,
-                            order=len(media_files)
-                        )
-                        media_files.append(media)
-                        logger.info(f"Media file added: {file.name}")
-                    except Exception as e:
-                        # Log error but don't fail the entire request
-                        logger.error(f"Error processing media file {file.name}: {e}", exc_info=True)
-                        continue
+
+            for index, file_data in enumerate(validated_media):
+                Media.objects.create(
+                    issue=issue,
+                    file=file_data['file'],
+                    media_type=file_data['media_type'],
+                    order=index
+                )
 
             # Auto-assign to initiator based on issue category
             if issue.category and issue.category.assignment_category:
@@ -310,21 +340,80 @@ class IssueViewSet(viewsets.ModelViewSet):
                         notes='Auto-assigned on creation'
                     )
                     logger.info(f"Issue {issue.id} auto-assigned to {ac.initiator_admin.username}")
-        except Exception as e:
-            logger.error(f"Error creating issue: {e}", exc_info=True)
-            raise
     
     def create(self, request, *args, **kwargs):
         """Override create to return detailed serializer response"""
+        submission_token = request.data.get('submission_token')
+        if submission_token and request.user.is_authenticated:
+            existing_issue = Issue.objects.filter(
+                author=request.user,
+                submission_token=submission_token
+            ).select_related('author', 'category', 'state', 'district', 'city').first()
+            if existing_issue:
+                detail_serializer = IssueDetailSerializer(existing_issue, context={'request': request})
+                payload = detail_serializer.data
+                payload['duplicate_submission'] = True
+                return Response(payload, status=status.HTTP_200_OK)
+
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer)
-        
+
+        try:
+            self.perform_create(serializer)
+        except IntegrityError:
+            if submission_token and request.user.is_authenticated:
+                existing_issue = Issue.objects.filter(
+                    author=request.user,
+                    submission_token=submission_token
+                ).select_related('author', 'category', 'state', 'district', 'city').first()
+                if existing_issue:
+                    detail_serializer = IssueDetailSerializer(existing_issue, context={'request': request})
+                    payload = detail_serializer.data
+                    payload['duplicate_submission'] = True
+                    return Response(payload, status=status.HTTP_200_OK)
+            raise
+
         # Return the created issue using the detail serializer
         issue = serializer.instance
         detail_serializer = IssueDetailSerializer(issue, context={'request': request})
         headers = self.get_success_headers(detail_serializer.data)
         return Response(detail_serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+    def perform_update(self, serializer):
+        serializer.save()
+
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
+    def mine(self, request):
+        queryset = self.get_queryset().filter(author=request.user)
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = IssueListSerializer(page, many=True, context={'request': request})
+            return self.get_paginated_response(serializer.data)
+        serializer = IssueListSerializer(queryset, many=True, context={'request': request})
+        return Response(serializer.data)
+
+    def _validate_media_files(self):
+        validated_media = []
+        for key, uploaded_file in self.request.FILES.items():
+            if not (key.startswith('media_') or key == 'file'):
+                continue
+            file_ext = uploaded_file.name.rsplit('.', 1)[-1].lower() if '.' in uploaded_file.name else ''
+            if file_ext not in self.allowed_media_extensions:
+                raise serializers.ValidationError({
+                    'media': f'Unsupported file format: {uploaded_file.name}.'
+                })
+            if file_ext in self.image_extensions:
+                media_type = 'image'
+            elif file_ext in self.video_extensions:
+                media_type = 'video'
+            elif file_ext in self.audio_extensions:
+                media_type = 'audio'
+            else:
+                raise serializers.ValidationError({
+                    'media': f'Unable to determine media type for: {uploaded_file.name}.'
+                })
+            validated_media.append({'file': uploaded_file, 'media_type': media_type})
+        return validated_media
 
     @action(detail=True, methods=['post'])
     def vote(self, request, pk=None):
@@ -572,9 +661,42 @@ class AdminGrievanceViewSet(viewsets.ModelViewSet):
         return IssueListSerializer
 
     def get_queryset(self):
-        return super().get_queryset().select_related(
+        queryset = super().get_queryset().select_related(
             'author', 'category', 'state', 'district', 'city', 'assigned_to'
         ).prefetch_related('tags', 'media_files', 'admin_notes', 'workflow_transitions')
+
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+
+        category_filter = self.request.query_params.get('category')
+        if category_filter:
+            queryset = queryset.filter(category_id=category_filter)
+
+        state_filter = self.request.query_params.get('state')
+        if state_filter:
+            queryset = queryset.filter(state_id=state_filter)
+
+        district_filter = self.request.query_params.get('district')
+        if district_filter:
+            queryset = queryset.filter(district_id=district_filter)
+
+        city_filter = self.request.query_params.get('city')
+        if city_filter:
+            queryset = queryset.filter(city_id=city_filter)
+
+        search = self.request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(
+                Q(title__icontains=search) | Q(description__icontains=search)
+            )
+
+        ordering = self.request.query_params.get('ordering')
+        allowed_ordering = {'created_at', '-created_at', 'upvotes_count', '-upvotes_count', 'comments_count', '-comments_count'}
+        if ordering in allowed_ordering:
+            queryset = queryset.order_by(ordering)
+
+        return queryset
 
     def partial_update(self, request, *args, **kwargs):
         instance = self.get_object()

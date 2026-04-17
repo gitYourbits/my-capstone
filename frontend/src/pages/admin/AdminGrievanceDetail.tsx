@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { adminAPI, WORKFLOW_STAGES } from "@/lib/api";
+import { adminAPI, issueAPI, WORKFLOW_STAGES } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -33,6 +33,7 @@ export default function AdminGrievanceDetail() {
   const { toast } = useToast();
   const [issue, setIssue] = useState<any>(null);
   const [notes, setNotes] = useState<any[]>([]);
+  const [publicComments, setPublicComments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
   const [newNote, setNewNote] = useState("");
@@ -47,15 +48,18 @@ export default function AdminGrievanceDetail() {
   const load = async () => {
     if (!id) return;
     try {
-      const [detail, notesList] = await Promise.all([
+      const [detail, notesList, commentsList] = await Promise.all([
         adminAPI.getGrievance(Number(id)),
         adminAPI.getNotes(Number(id)),
+        issueAPI.getComments(Number(id)),
       ]);
       setIssue(detail);
       setNotes(notesList);
+      setPublicComments(Array.isArray(commentsList) ? commentsList : []);
     } catch {
       setIssue(null);
       setNotes([]);
+      setPublicComments([]);
     } finally {
       setLoading(false);
     }
@@ -274,6 +278,42 @@ export default function AdminGrievanceDetail() {
                     </Badge>
                   ))}
                 </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Issue comments</CardTitle>
+              <CardDescription>All currently available public discussion on this issue</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {publicComments.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No comments yet.</p>
+              ) : (
+                publicComments.map((c) => (
+                  <div key={c.id} className="rounded-lg border border-border bg-muted/45 p-3 text-sm">
+                    <div className="mb-1 flex items-center gap-2">
+                      <span className="font-medium text-foreground">{c.is_anonymous ? "Anonymous" : c.author_name}</span>
+                      <span className="text-xs text-muted-foreground">·</span>
+                      <span className="text-xs text-muted-foreground">
+                        {c.created_at ? formatDistanceToNow(new Date(c.created_at), { addSuffix: true }) : ""}
+                      </span>
+                    </div>
+                    <p className="whitespace-pre-wrap text-muted-foreground">{c.content}</p>
+                    {Array.isArray(c.replies) && c.replies.length > 0 && (
+                      <div className="mt-2 space-y-2 border-l border-border pl-3">
+                        {c.replies.map((r: any) => (
+                          <div key={r.id} className="rounded-md bg-muted/50 p-2 text-xs">
+                            <span className="font-medium text-foreground">{r.is_anonymous ? "Anonymous" : r.author_name}</span>
+                            <span className="mx-1 text-muted-foreground">-</span>
+                            <span className="text-muted-foreground">{r.content}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))
               )}
             </CardContent>
           </Card>
