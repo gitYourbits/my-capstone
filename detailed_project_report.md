@@ -21,19 +21,19 @@
 
 VoiceUp is a web platform for citizens of india where they can raise local problems, share photo/video proof, get community attention through votes and comments, and let assigned officials move the case through a fixed workflow till it gets resolved or closed. The system is built so that public users and admin users use the *same* platform but with different views and permissions.
 
-The main idea is simple — the moment a problem is posted, it should not just sit in some table. It should reach the correct admin automatically, and people should be able to see what is happening with that problem at any point. So the design has both a public side (feed, detail, profile, posting, voting, commenting, sharing) and an admin side (dashboard, grievances list, grievance detail page, workflow stage update, internal notes, assignment config).
+The main idea is simple. The moment a problem is posted, it should not just sit in some table. It should reach the correct admin automatically, and people should be able to see what is happening with that problem at any point. So the design has both a public side (feed, detail, profile, posting, voting, commenting, sharing) and an admin side (dashboard, grievances list, grievance detail page, workflow stage update, internal notes, assignment config).
 
 Some important things which make this project a bit non-trivial:
 
 - Issues get auto-assigned to a particular admin based on category mapping, not randomly.
-- Posting of an issue is **idempotent** — if user retries because of network glitch, no duplicate post is created.
-- Trending score uses recency + engagement so old high-vote posts don’t dominate forever.
+- Posting of an issue is **idempotent**, so if user retries because of network glitch, no duplicate post is created.
+- Trending score uses recency + engagement so old high-vote posts don't dominate forever.
 - All workflow transition notes done by admins are visible publicly, but internal admin-only notes stay internal.
 - Theme toggle (dark / light) is available everywhere including login and signup pages.
 - Mobile users get a camera capture short cut, desktop user just gets file picker (which is correct).
 - Personal profile page lets a logged in user manage their own posts (view, edit, delete) at one place.
 
-This report covers the whole engineering side of it — how it was planned, how data flows, what design choices were taken, what algorithms were used (in plain pseudo code), and how it was tested.
+This report covers the whole engineering side of it. That means how it was planned, how data flows, what design choices were taken, what algorithms were used (in plain pseudo code), and how it was tested.
 
 
 ---
@@ -44,14 +44,14 @@ This is the actual phase-by-phase plan that was followed during development. Eve
 
 ### 2.1 Phases of the project
 
-1. **Phase 1 — Idea finalising and requirement gathering**
-2. **Phase 2 — System design and DB design**
-3. **Phase 3 — Backend implementation (core models + APIs)**
-4. **Phase 4 — Frontend implementation (public side)**
-5. **Phase 5 — Admin module (workflow + dashboard + assignment)**
-6. **Phase 6 — Reliability and UX hardening (idempotent post, atomic media, owner edit/delete, profile page)**
-7. **Phase 7 — Visual polish (cards, comments preview, theme, filters)**
-8. **Phase 8 — Testing, bug fixes, deployment readiness**
+1. **Phase 1**: Idea finalising and requirement gathering
+2. **Phase 2**: System design and DB design
+3. **Phase 3**: Backend implementation (core models + APIs)
+4. **Phase 4**: Frontend implementation (public side)
+5. **Phase 5**: Admin module (workflow + dashboard + assignment)
+6. **Phase 6**: Reliability and UX hardening (idempotent post, atomic media, owner edit/delete, profile page)
+7. **Phase 7**: Visual polish (cards, comments preview, theme, filters)
+8. **Phase 8**: Testing, bug fixes, deployment readiness
 
 
 ### 2.2 Phase wise activities and deliverables
@@ -60,7 +60,7 @@ This is the actual phase-by-phase plan that was followed during development. Eve
 
 - Listed problem categories that civic platforms commonly need (infrastructure, public services, environment, etc.).
 - Decided that anonymous posting is required, because some citizens are scared to attach their identity.
-- Decided that admin should not see "everything mixed" — they should see only the issues which are mapped to their assignment bucket as initiator.
+- Decided that admin should not see "everything mixed". They should see only the issues which are mapped to their assignment bucket as initiator.
 - Decided to keep workflow stages closer to real bureaucratic flow: Pending → Acknowledged → Assigned to Team → Resolution Done → Validated → Closed (Remarks).
 - Output of this phase: a written requirements list which became base for design.
 
@@ -106,7 +106,7 @@ This phase addressed real bugs and polish issues:
 - Added permissions: only the author can edit / delete their own issue.
 - Added Profile page with "my issues" + edit + delete.
 - Tag length increased and tag normalisation (lowercase, single-spaced, deduped) added.
-- Camera button shown only on mobile-like contexts (because desktop doesn’t support `capture` properly).
+- Camera button shown only on mobile-like contexts (because desktop doesn't support `capture` properly).
 
 #### Phase 7 — Visual polish
 
@@ -148,7 +148,7 @@ This phase addressed real bugs and polish issues:
 - **Build**: Vite for frontend bundle
 - **Auth**: JWT (access + refresh)
 - **Styling**: Tailwind utility classes + design tokens (HSL)
-- **Misc**: ESLint for FE lint, Django’s system checks for BE
+- **Misc**: ESLint for FE lint, Django's system checks for BE
 
 
 ### 2.5 Risk register (and how each one was handled)
@@ -158,7 +158,7 @@ This phase addressed real bugs and polish issues:
 | Duplicate post on retry | User clicks twice / network glitch creates duplicate | Submission token + DB unique constraint per author |
 | Trending crash on prod DB | SQLite-only SQL fails on Postgres | Replaced with ORM expressions + fallback to recent on DB error |
 | Partial media upload | Issue saved but media missing silently | Whole creation moved inside atomic transaction; invalid files rejected up front |
-| Unauthorised editing of another user’s post | Anyone could PATCH/DELETE | Added `IsAuthorOrReadOnly` permission |
+| Unauthorised editing of another user's post | Anyone could PATCH/DELETE | Added `IsAuthorOrReadOnly` permission |
 | Camera UX confusion on desktop | Desktop ignored `capture="environment"` and showed file picker | Camera button only shown on mobile-like contexts |
 | Bad data in tags | Whitespace or case duplicates create many copies | Tag normalisation + uniqueness slug logic |
 | Filter UI on admin not actually filtering | `filterset_fields` was used but DjangoFilterBackend was not enabled | Replaced with explicit `get_queryset` filters in admin viewset |
@@ -194,9 +194,9 @@ flowchart LR
 
 External entities:
 
-- **Citizen user** — logged in citizen who posts, votes, comments, edits own.
-- **Anonymous visitor** — not logged in, can only read.
-- **Admin** — staff user who manages grievances workflow and assignment.
+- **Citizen user**: logged in citizen who posts, votes, comments, edits own.
+- **Anonymous visitor**: not logged in, can only read.
+- **Admin**: staff user who manages grievances workflow and assignment.
 
 The platform is one big logical system here.
 
@@ -237,9 +237,9 @@ flowchart TB
 
     v --> p3
     c --> p3
-    p3 <-- db2
-    p3 <-- db3
-    p3 <-- db4
+    db2 --> p3
+    db3 --> p3
+    db4 --> p3
 
     c --> p4
     p4 <--> db3
@@ -255,13 +255,13 @@ flowchart TB
 
 Process explanation in plain words:
 
-- **1.0 Auth and Identity** — handles signup, login, JWT issue, profile lookup. Talks to Users table.
-- **2.0 Issue Posting** — citizen posts an issue with media. Sends it to the routing process for auto-assignment.
-- **3.0 Public Discovery and Read** — feed + issue detail. Reads from issues, comments, transitions.
-- **4.0 Engagement** — vote and comment on issue. Updates counters on issue.
-- **5.0 Owner Self Management** — edit / delete own issue from profile or detail.
-- **6.0 Admin Workflow Management** — admin moves stage, adds notes, updates status.
-- **7.0 Assignment Routing** — when issue is created, route it to an initiator admin based on category mapping.
+- **1.0 Auth and Identity**: handles signup, login, JWT issue, profile lookup. Talks to Users table.
+- **2.0 Issue Posting**: citizen posts an issue with media. Sends it to the routing process for auto-assignment.
+- **3.0 Public Discovery and Read**: feed + issue detail. Reads from issues, comments, transitions.
+- **4.0 Engagement**: vote and comment on issue. Updates counters on issue.
+- **5.0 Owner Self Management**: edit / delete own issue from profile or detail.
+- **6.0 Admin Workflow Management**: admin moves stage, adds notes, updates status.
+- **7.0 Assignment Routing**: when issue is created, route it to an initiator admin based on category mapping.
 
 
 ### 3.3 Level 2 — Issue Posting (process 2.0)
@@ -562,17 +562,17 @@ Important things in this layout:
 - JWT is stateless, so the backend does not store sessions.
 - Media files are stored on disk in dev. In prod they can move to S3 / object storage with no code change in the frontend.
 - The database is the single source of truth for issues, votes, comments, workflow.
-- The admin module is part of the same SPA — there is no separate admin UI, only a separate route tree under `/admin`.
+- The admin module is part of the same SPA. There is no separate admin UI, only a separate route tree under `/admin`.
 
 
 ### 5.2 Frontend design
 
 #### 5.2.1 Folder structure (logical)
 
-- `src/pages` — page-level routes (`Index`, `Feed`, `IssueDetail`, `CreateIssue`, `EditIssue`, `Profile`, `Login`, `Signup`, `admin/*`)
-- `src/components` — reusable UI (`Navbar`, `IssueCard`, `FilterSidebar`, `ThemeToggle`, `AdminLayout`, plus shadcn/ui primitives)
-- `src/lib/api.ts` — single place for all API calls
-- `src/index.css` — design tokens (HSL based) for both light and dark themes
+- `src/pages` holds page-level routes (`Index`, `Feed`, `IssueDetail`, `CreateIssue`, `EditIssue`, `Profile`, `Login`, `Signup`, `admin/*`)
+- `src/components` holds reusable UI (`Navbar`, `IssueCard`, `FilterSidebar`, `ThemeToggle`, `AdminLayout`, plus shadcn/ui primitives)
+- `src/lib/api.ts` is the single place for all API calls
+- `src/index.css` has design tokens (HSL based) for both light and dark themes
 
 #### 5.2.2 State strategy
 
@@ -588,7 +588,7 @@ Important things in this layout:
 
 - BrowserRouter with `Routes`/`Route`.
 - Public routes: `/`, `/feed`, `/issue/:id`, `/issue/:id/edit`, `/create`, `/profile`, `/login`, `/signup`.
-- Admin routes: `/admin`, `/admin/grievances`, `/admin/grievances/:id`, `/admin/assignment` — all wrapped in `AdminLayout` which enforces `is_staff`.
+- Admin routes: `/admin`, `/admin/grievances`, `/admin/grievances/:id`, `/admin/assignment`, all wrapped in `AdminLayout` which enforces `is_staff`.
 - 404 fallback at `*`.
 
 #### 5.2.4 Theme system
@@ -620,7 +620,7 @@ Important things in this layout:
 
 - `IsAuthenticatedOrReadOnly` is the global default for issues, comments, etc.
 - `IsAuthorOrReadOnly` is a custom permission that lets only the author update or delete their own object.
-- `IsAdminUser` is a custom one (different from Django’s default name) that requires `is_staff` and authentication.
+- `IsAdminUser` is a custom one (different from Django's default name) that requires `is_staff` and authentication.
 
 #### 5.3.3 Endpoint groups (high level only — implementation details intentionally not duplicated here)
 
@@ -688,8 +688,8 @@ erDiagram
 #### 5.4.2 Important columns and constraints
 
 - `Issue.submission_token` (nullable string, indexed). UniqueConstraint per `(author, submission_token)` when non-null.
-- `Issue.upvotes_count`, `downvotes_count`, `comments_count`, `views_count` — denormalised counters for fast feed.
-- `Issue.workflow_stage` — string, default `pending`. Acts as enum-ish field at app level.
+- `Issue.upvotes_count`, `downvotes_count`, `comments_count`, `views_count` are denormalised counters for fast feed.
+- `Issue.workflow_stage` is a string with default `pending`. Acts as enum-ish field at app level.
 - `Tag.name` is unique, `Tag.slug` is unique. Length increased to 100/120 to avoid truncation.
 - `Vote` has unique together on `(user, issue)` and `(user, comment)` so one user cannot have more than one vote on the same target.
 - `IssueView` has unique together on `(issue, user, ip_address)` for de-dup of views.
@@ -730,14 +730,14 @@ erDiagram
 
 ### 5.7 Security design
 
-- Passwords go through Django’s default validators on signup.
+- Passwords go through Django's default validators on signup.
 - JWT is short-lived for access (7 days configured), refresh has longer life with rotation + blacklist on rotate.
 - All write endpoints require auth. Owner-only writes are enforced server-side, not just client-side.
-- Admin endpoints have a hard `is_staff` gate at the layout level *and* at the API permission level — defence in depth.
+- Admin endpoints have a hard `is_staff` gate at the layout level *and* at the API permission level, so defence in depth.
 - Internal admin notes are explicitly not exposed in public serializers; only stage transition notes are.
 - File uploads validate extension and size before any DB write.
 - Idempotent submissions reduce risk of accidental double posts caused by retries.
-- `.gitignore` excludes secrets, env, and build cache so they don’t enter the repo.
+- `.gitignore` excludes secrets, env, and build cache so they don't enter the repo.
 
 
 ### 5.8 Deployment design (target shape)
@@ -751,7 +751,7 @@ erDiagram
 
 ### 5.9 Error handling philosophy
 
-- Never crash the user’s page on a non-critical failure. View tracking error is silently ignored, vote failure shows toast, etc.
+- Never crash the user's page on a non-critical failure. View tracking error is silently ignored, vote failure shows toast, etc.
 - Critical failure (issue create error) keeps the form intact so user can retry.
 - Whole-page failures (issue not found) gracefully redirect with a clear toast instead of a blank page.
 - Backend prefers explicit error responses with `error`, `errors`, and `detail` keys so the client can show a human message.
@@ -1315,7 +1315,7 @@ Sample functional test cases (selected, not exhaustive):
 | FT-05 | Create issue with bad file (.exe) | submit | 400 returned, no issue created | Same | Pass |
 | FT-06 | Retry create with same token | submit twice with same token | 1 issue total, 2nd response has duplicate_submission flag | Same | Pass |
 | FT-07 | Edit own issue | open edit, change title, save | redirect to detail with new title | Same | Pass |
-| FT-08 | Edit other user’s issue | open URL directly | toast + redirect away | Same | Pass |
+| FT-08 | Edit other user's issue | open URL directly | toast + redirect away | Same | Pass |
 | FT-09 | Delete own issue | confirm dialog → delete | 204, removed everywhere | Same | Pass |
 | FT-10 | Vote toggle | upvote, then upvote again | counter +1, then -1 | Same | Pass |
 | FT-11 | Comment posting | empty content | post button stays disabled | Same | Pass |
@@ -1348,10 +1348,10 @@ Branch coverage on this function: 100% of meaningful branches.
 
 | Branch | Verified |
 |--------|----------|
-| no submission_token | yes — normal create runs |
-| submission_token but no existing | yes — atomic create runs |
-| submission_token with existing record | yes — returns existing 200 with flag |
-| transaction.atomic raises IntegrityError on race | yes — fallback lookup returns existing |
+| no submission_token | yes, normal create runs |
+| submission_token but no existing | yes, atomic create runs |
+| submission_token with existing record | yes, returns existing 200 with flag |
+| transaction.atomic raises IntegrityError on race | yes, fallback lookup returns existing |
 
 #### Function: `validate_media_files`
 
@@ -1376,10 +1376,10 @@ Branch coverage on this function: 100% of meaningful branches.
 
 | Branch | Verified |
 |--------|----------|
-| safe method (GET/HEAD/OPTIONS) | yes — true |
-| unsafe method but not owner | yes — false (403) |
-| unsafe method and owner | yes — true |
-| unsafe method but unauthenticated | yes — false |
+| safe method (GET/HEAD/OPTIONS) | yes, returns true |
+| unsafe method but not owner | yes, returns false (403) |
+| unsafe method and owner | yes, returns true |
+| unsafe method but unauthenticated | yes, returns false |
 
 
 ### 7.5 Non-functional testing
@@ -1395,7 +1395,7 @@ Branch coverage on this function: 100% of meaningful branches.
 - Tested that anonymous users cannot vote, comment, post, edit, or delete.
 - Tested that a logged-in non-staff user cannot reach `/admin/*` even by typing URL.
 - Tested that JWT expiry triggers refresh exactly once; if refresh fails, user gets cleanly logged out.
-- Tested that internal admin notes don’t leak to the public payload.
+- Tested that internal admin notes don't leak to the public payload.
 
 #### 7.5.3 Usability
 
@@ -1457,7 +1457,7 @@ After the above rounds, every public-facing flow and every admin-facing flow wor
 ## 8. Final Notes
 
 - This project pulls together design, reliability and user experience into one platform that real citizens can use.
-- The architecture intentionally keeps the SPA + Django split clean so that backend changes (e.g. moving DB or media to cloud) don’t need frontend rewrites.
+- The architecture intentionally keeps the SPA + Django split clean so that backend changes (e.g. moving DB or media to cloud) don't need frontend rewrites.
 - Admin and public flows share one platform but enforce role boundaries strictly through both UI gates and backend permissions.
 - All known defects up to this point have been addressed and the system has been smoke-verified end to end.
 
