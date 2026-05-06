@@ -20,6 +20,7 @@ from .models import (
     Media, Comment, Vote, IssueView, IssueAdminNote,
     AssignmentCategory, WorkflowTransition
 )
+from .spam_filter import assess_issue_for_spam
 from .serializers import (
     UserSerializer, UserProfileSerializer, RegisterSerializer,
     StateSerializer, DistrictSerializer, CitySerializer,
@@ -201,6 +202,9 @@ class IssueViewSet(viewsets.ModelViewSet):
     image_extensions = {'jpg', 'jpeg', 'png', 'gif', 'webp'}
     video_extensions = {'mp4', 'mov', 'avi', 'webm'}
     audio_extensions = {'mp3', 'wav', 'm4a', 'ogg'}
+    # Hard ceiling per single uploaded file. Frontend also blocks earlier with a
+    # friendly toast, so most users will never trigger this server-side error.
+    MAX_MEDIA_FILE_BYTES = 25 * 1024 * 1024  # 25 MB
 
     def get_serializer_class(self):
         if self.action == 'list':
@@ -276,6 +280,11 @@ class IssueViewSet(viewsets.ModelViewSet):
         elif sort_by == 'recent':
             queryset = queryset.order_by('-created_at')
         
+        # Hide flagged spam from the public list. Owner and admin paths don't
+        # go through the 'list' action so they are unaffected.
+        if self.action == 'list':
+            queryset = queryset.exclude(spam_status='flagged')
+
         return queryset.select_related('author', 'category', 'state', 'district', 'city', 'assigned_to').prefetch_related(
             'tags',
             'media_files',
@@ -312,9 +321,43 @@ class IssueViewSet(viewsets.ModelViewSet):
         validated_media = self._validate_media_files()
         submission_token = serializer.validated_data.pop('submission_token', None)
 
+        # AI moderation runs BEFORE we touch the DB so we have a stable verdict
+        # to persist together with the issue. Failures inside the filter return
+        # is_legitimate=True so legitimate users are never blocked by an outage.
+        title_for_check = serializer.validated_data.get('title') or ''
+        description_for_check = serializer.validated_data.get('description') or ''
+        tags_for_check = serializer.validated_data.get('tags', []) or []
+        category_obj = serializer.validated_data.get('category')
+        category_name_for_check = getattr(category_obj, 'name', None)
+
+        spam_assessment = assess_issue_for_spam(
+            title=title_for_check,
+            description=description_for_check,
+            tags=tags_for_check,
+            category_name=category_name_for_check,
+            user=self.request.user,
+        )
+        is_flagged = not bool(spam_assessment.get('is_legitimate', True))
+
         with transaction.atomic():
             issue = serializer.save(author=self.request.user, submission_token=submission_token)
-            logger.info(f"Issue created successfully: {issue.id}")
+
+            if spam_assessment.get('ran'):
+                issue.spam_status = 'flagged' if is_flagged else 'clean'
+            else:
+                issue.spam_status = 'skipped'
+            issue.spam_reason = (spam_assessment.get('reason') or '')[:500]
+            try:
+                issue.spam_score = float(spam_assessment.get('confidence', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                issue.spam_score = 0.0
+            issue.spam_checked_at = timezone.now()
+            issue.save(update_fields=['spam_status', 'spam_reason', 'spam_score', 'spam_checked_at'])
+
+            logger.info(
+                "Issue created %s (spam_status=%s, ran=%s)",
+                issue.id, issue.spam_status, bool(spam_assessment.get('ran')),
+            )
 
             for index, file_data in enumerate(validated_media):
                 Media.objects.create(
@@ -324,13 +367,14 @@ class IssueViewSet(viewsets.ModelViewSet):
                     order=index
                 )
 
-            # Auto-assign to initiator based on issue category
-            if issue.category and issue.category.assignment_category:
+            # Skip auto-assignment for flagged spam: it shouldn't enter the
+            # admin workflow until a human un-flags it.
+            if not is_flagged and issue.category and issue.category.assignment_category:
                 ac = issue.category.assignment_category
                 if ac.initiator_admin:
                     issue.assigned_to = ac.initiator_admin
                     issue.workflow_stage = 'pending'
-                    issue.save()
+                    issue.save(update_fields=['assigned_to', 'workflow_stage', 'updated_at'])
                     WorkflowTransition.objects.create(
                         issue=issue,
                         from_stage='',
@@ -353,6 +397,9 @@ class IssueViewSet(viewsets.ModelViewSet):
                 detail_serializer = IssueDetailSerializer(existing_issue, context={'request': request})
                 payload = detail_serializer.data
                 payload['duplicate_submission'] = True
+                if existing_issue.spam_status == 'flagged':
+                    payload['spam_blocked'] = True
+                    payload['spam_reason'] = existing_issue.spam_reason or ''
                 return Response(payload, status=status.HTTP_200_OK)
 
         serializer = self.get_serializer(data=request.data)
@@ -370,14 +417,39 @@ class IssueViewSet(viewsets.ModelViewSet):
                     detail_serializer = IssueDetailSerializer(existing_issue, context={'request': request})
                     payload = detail_serializer.data
                     payload['duplicate_submission'] = True
+                    if existing_issue.spam_status == 'flagged':
+                        payload['spam_blocked'] = True
+                        payload['spam_reason'] = existing_issue.spam_reason or ''
                     return Response(payload, status=status.HTTP_200_OK)
             raise
 
-        # Return the created issue using the detail serializer
         issue = serializer.instance
         detail_serializer = IssueDetailSerializer(issue, context={'request': request})
-        headers = self.get_success_headers(detail_serializer.data)
-        return Response(detail_serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+        payload = detail_serializer.data
+
+        # Spam-blocked posts are persisted (so user sees them in profile and
+        # admin sees them in the spam panel) but we return 200 with a
+        # spam_blocked flag so the frontend can route the user to their
+        # profile flagged section instead of the public detail page.
+        if issue.spam_status == 'flagged':
+            payload['spam_blocked'] = True
+            payload['spam_reason'] = issue.spam_reason or ''
+            return Response(payload, status=status.HTTP_200_OK)
+
+        headers = self.get_success_headers(payload)
+        return Response(payload, status=status.HTTP_201_CREATED, headers=headers)
+
+    def retrieve(self, request, *args, **kwargs):
+        """Hide flagged-spam issues from non-owner non-staff viewers."""
+        instance = self.get_object()
+        if instance.spam_status == 'flagged':
+            user = request.user
+            is_owner = bool(getattr(user, 'is_authenticated', False)) and user.id == instance.author_id
+            is_staff = bool(getattr(user, 'is_authenticated', False)) and user.is_staff
+            if not (is_owner or is_staff):
+                return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
 
     def perform_update(self, serializer):
         serializer.save()
@@ -401,6 +473,16 @@ class IssueViewSet(viewsets.ModelViewSet):
             if file_ext not in self.allowed_media_extensions:
                 raise serializers.ValidationError({
                     'media': f'Unsupported file format: {uploaded_file.name}.'
+                })
+            file_size = getattr(uploaded_file, 'size', 0) or 0
+            if file_size > self.MAX_MEDIA_FILE_BYTES:
+                size_mb = file_size / (1024 * 1024)
+                raise serializers.ValidationError({
+                    'media': (
+                        f'"{uploaded_file.name}" is {size_mb:.1f} MB which is '
+                        f'over the 25 MB per-file limit. Please pick a smaller '
+                        f'photo, video or voice note and try again.'
+                    )
                 })
             if file_ext in self.image_extensions:
                 media_type = 'image'
@@ -531,6 +613,8 @@ class CommentViewSet(viewsets.ModelViewSet):
         return queryset.select_related('author', 'issue', 'parent')
 
     def perform_create(self, serializer):
+        # The Issue.comments_count counter is kept in sync by signals on the
+        # Comment model (see core/models.py). We just save the row.
         serializer.save(author=self.request.user)
 
     @action(detail=True, methods=['post'])
@@ -626,12 +710,134 @@ class AdminDashboardStatsView(APIView):
             created_at__gte=timezone.now() - timedelta(days=7)
         ).count()
         pending_count = Issue.objects.filter(status='pending').count()
+        spam_total = Issue.objects.filter(spam_status='flagged').count()
+        spam_recent_7d = Issue.objects.filter(
+            spam_status='flagged',
+            created_at__gte=timezone.now() - timedelta(days=7),
+        ).count()
         return Response({
             'total_issues': total,
             'by_status': by_status,
             'recent_7_days': recent_7d,
             'pending_count': pending_count,
+            'spam_total': spam_total,
+            'spam_recent_7_days': spam_recent_7d,
         })
+
+
+class AdminSpamReportsView(APIView):
+    """List flagged-spam issues with detailed uploader info for admin review."""
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def get(self, request):
+        from django.db.models import Count
+
+        qs = (
+            Issue.objects
+            .filter(spam_status='flagged')
+            .select_related('author', 'category', 'state', 'district', 'city')
+            .order_by('-created_at')
+        )
+
+        page_size = 50
+        try:
+            page = max(1, int(request.query_params.get('page') or 1))
+        except (TypeError, ValueError):
+            page = 1
+        start = (page - 1) * page_size
+        end = start + page_size
+        total = qs.count()
+        items = list(qs[start:end])
+
+        author_ids = [i.author_id for i in items if i.author_id]
+        author_post_counts: dict[int, int] = {}
+        author_flagged_counts: dict[int, int] = {}
+        if author_ids:
+            for row in (
+                Issue.objects
+                .filter(author_id__in=author_ids)
+                .values('author_id')
+                .annotate(n=Count('id'))
+            ):
+                author_post_counts[row['author_id']] = row['n']
+            for row in (
+                Issue.objects
+                .filter(author_id__in=author_ids, spam_status='flagged')
+                .values('author_id')
+                .annotate(n=Count('id'))
+            ):
+                author_flagged_counts[row['author_id']] = row['n']
+
+        results = []
+        for issue in items:
+            author = issue.author
+            results.append({
+                'id': issue.id,
+                'title': issue.title,
+                'description': issue.description,
+                'category_name': issue.category.name if issue.category else None,
+                'location': {
+                    'city': issue.city.name if issue.city else None,
+                    'district': issue.district.name if issue.district else None,
+                    'state': issue.state.name if issue.state else None,
+                },
+                'spam_reason': issue.spam_reason or '',
+                'spam_score': issue.spam_score,
+                'spam_checked_at': issue.spam_checked_at.isoformat() if issue.spam_checked_at else None,
+                'created_at': issue.created_at.isoformat(),
+                'is_anonymous': issue.is_anonymous,
+                'author': {
+                    'id': author.id if author else None,
+                    'username': author.username if author else None,
+                    'email': author.email if author else None,
+                    'full_name': (author.get_full_name() if author else '') or (author.username if author else ''),
+                    'date_joined': author.date_joined.isoformat() if (author and author.date_joined) else None,
+                    'is_staff': bool(author.is_staff) if author else False,
+                    'total_posts': author_post_counts.get(author.id, 0) if author else 0,
+                    'flagged_posts': author_flagged_counts.get(author.id, 0) if author else 0,
+                },
+            })
+
+        return Response({
+            'count': total,
+            'page': page,
+            'page_size': page_size,
+            'results': results,
+        })
+
+
+class AdminSpamUnflagView(APIView):
+    """Allow an admin to clear a spam flag and let the issue go public."""
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def post(self, request, pk):
+        try:
+            issue = Issue.objects.select_related('category').get(pk=pk)
+        except Issue.DoesNotExist:
+            return Response({'error': 'Issue not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        was_flagged = issue.spam_status == 'flagged'
+        issue.spam_status = 'clean'
+        issue.spam_reason = ''
+        issue.save(update_fields=['spam_status', 'spam_reason', 'updated_at'])
+
+        # If this is the first time it's being un-flagged, also run the
+        # auto-assignment that was skipped at creation time.
+        if was_flagged and not issue.assigned_to and issue.category and issue.category.assignment_category:
+            ac = issue.category.assignment_category
+            if ac.initiator_admin:
+                issue.assigned_to = ac.initiator_admin
+                issue.workflow_stage = 'pending'
+                issue.save(update_fields=['assigned_to', 'workflow_stage', 'updated_at'])
+                WorkflowTransition.objects.create(
+                    issue=issue,
+                    from_stage='',
+                    to_stage='pending',
+                    assigned_to=ac.initiator_admin,
+                    performed_by=request.user,
+                    notes='Auto-assigned after admin cleared spam flag',
+                )
+        return Response({'message': 'Spam flag cleared.', 'spam_status': issue.spam_status})
 
 
 class AdminGrievanceUpdateSerializer(serializers.ModelSerializer):

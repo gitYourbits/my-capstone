@@ -2,9 +2,9 @@ from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
 from django.core.validators import FileExtensionValidator
-from django.db.models.signals import post_save
+from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
-from django.db.models import Q
+from django.db.models import Q, F
 from PIL import Image
 import os
 from io import BytesIO
@@ -179,7 +179,23 @@ class Issue(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     is_featured = models.BooleanField(default=False)
     is_verified = models.BooleanField(default=False)
-    
+
+    # Spam / content moderation (set by AI filter at creation time)
+    SPAM_STATUS_CHOICES = [
+        ('clean', 'Clean'),
+        ('flagged', 'Flagged as spam'),
+        ('skipped', 'Skipped (no filter)'),
+    ]
+    spam_status = models.CharField(
+        max_length=12,
+        choices=SPAM_STATUS_CHOICES,
+        default='clean',
+        db_index=True,
+    )
+    spam_reason = models.TextField(blank=True, default='')
+    spam_score = models.FloatField(default=0.0)
+    spam_checked_at = models.DateTimeField(null=True, blank=True)
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -328,6 +344,63 @@ class Comment(models.Model):
 
     def __str__(self):
         return f"Comment by {self.author.username} on {self.issue.title}"
+
+
+# --- Keep Issue.comments_count in sync with actual Comment rows --------------
+# We use signals so every place that creates / soft-deletes / hard-deletes a
+# comment keeps the denormalised counter correct.
+
+def _was_visible(was_deleted_flag):
+    return not was_deleted_flag
+
+
+@receiver(post_save, sender=Comment)
+def _sync_comments_count_on_save(sender, instance, created, **kwargs):
+    """Increment / decrement issue.comments_count based on Comment lifecycle.
+
+    Counts every non-deleted comment row (top-level + replies). Soft-deleting a
+    comment (setting is_deleted=True) decrements; un-deleting increments.
+    """
+    if created:
+        if not instance.is_deleted:
+            Issue.objects.filter(pk=instance.issue_id).update(
+                comments_count=F('comments_count') + 1
+            )
+        return
+
+    # Existing row: detect is_deleted flip if any.
+    prev = getattr(instance, '_prev_is_deleted', None)
+    if prev is None:
+        return
+    if prev and not instance.is_deleted:
+        Issue.objects.filter(pk=instance.issue_id).update(
+            comments_count=F('comments_count') + 1
+        )
+    elif (not prev) and instance.is_deleted:
+        Issue.objects.filter(pk=instance.issue_id, comments_count__gt=0).update(
+            comments_count=F('comments_count') - 1
+        )
+
+
+@receiver(post_delete, sender=Comment)
+def _sync_comments_count_on_delete(sender, instance, **kwargs):
+    """Hard delete of a comment: drop the counter only if it was still visible."""
+    if not instance.is_deleted:
+        Issue.objects.filter(pk=instance.issue_id, comments_count__gt=0).update(
+            comments_count=F('comments_count') - 1
+        )
+
+
+# Track is_deleted flips so the post_save handler above can react correctly.
+_orig_comment_init = Comment.__init__
+
+
+def _comment_init_with_tracking(self, *args, **kwargs):
+    _orig_comment_init(self, *args, **kwargs)
+    self._prev_is_deleted = self.is_deleted
+
+
+Comment.__init__ = _comment_init_with_tracking
 
 
 class IssueAdminNote(models.Model):

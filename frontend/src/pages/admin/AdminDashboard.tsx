@@ -3,7 +3,8 @@ import { Link } from "react-router-dom";
 import { adminAPI } from "@/lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { FileText, CheckCircle, Clock, TrendingUp } from "lucide-react";
+import { FileText, CheckCircle, Clock, TrendingUp, ShieldAlert } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
 
 const statusLabels: Record<string, string> = {
   pending: "Pending",
@@ -19,15 +20,20 @@ export default function AdminDashboard() {
     by_status: Record<string, number>;
     recent_7_days: number;
     pending_count: number;
+    spam_total: number;
+    spam_recent_7_days: number;
   } | null>(null);
+  const [spamPreview, setSpamPreview] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    adminAPI
-      .getStats()
-      .then(setStats)
-      .catch(() => setStats(null))
-      .finally(() => setLoading(false));
+    Promise.all([
+      adminAPI.getStats().then(setStats).catch(() => setStats(null)),
+      adminAPI
+        .getSpamReports(1)
+        .then((r) => setSpamPreview(r.results.slice(0, 5)))
+        .catch(() => setSpamPreview([])),
+    ]).finally(() => setLoading(false));
   }, []);
 
   if (loading) {
@@ -111,6 +117,75 @@ export default function AdminDashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Spam Reports */}
+      <Card className="border-amber-500/30 bg-amber-500/5 dark:bg-amber-500/10">
+        <CardHeader className="flex flex-row items-start justify-between gap-4">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-foreground">
+              <ShieldAlert className="h-5 w-5 text-amber-500" />
+              Spam Reports
+            </CardTitle>
+            <CardDescription>
+              Posts auto-flagged by the AI content filter and hidden from the
+              public feed. {stats?.spam_recent_7_days ?? 0} new in last 7 days.
+            </CardDescription>
+          </div>
+          <Link to="/admin/spam">
+            <Button variant="outline" size="sm">
+              View all ({stats?.spam_total ?? 0})
+            </Button>
+          </Link>
+        </CardHeader>
+        <CardContent>
+          {spamPreview.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-border bg-background/40 px-4 py-6 text-center text-sm text-muted-foreground">
+              No spam reports right now. Things are clean.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {spamPreview.map((row) => (
+                <div
+                  key={row.id}
+                  className="rounded-lg border border-amber-500/25 bg-background/60 p-3 text-sm dark:bg-background/40"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-medium text-foreground">
+                        <Link to={`/admin/spam`} className="hover:underline">
+                          {row.title}
+                        </Link>
+                      </p>
+                      <p className="mt-0.5 text-xs text-muted-foreground line-clamp-1">
+                        by{" "}
+                        <span className="text-foreground">
+                          {row.author?.username ?? "(unknown)"}
+                        </span>
+                        {row.author?.email ? ` · ${row.author.email}` : ""}
+                        {typeof row.author?.flagged_posts === "number" && row.author?.total_posts ? (
+                          <>
+                            {" "}· {row.author.flagged_posts}/{row.author.total_posts} posts flagged
+                          </>
+                        ) : null}
+                      </p>
+                    </div>
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {row.created_at
+                        ? formatDistanceToNow(new Date(row.created_at), { addSuffix: true })
+                        : ""}
+                    </span>
+                  </div>
+                  {row.spam_reason && (
+                    <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                      Reason: {row.spam_reason}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

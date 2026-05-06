@@ -170,5 +170,19 @@ if DEBUG:
 CORS_ALLOW_CREDENTIALS = True
 
 # File Upload Settings
-FILE_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024  # 50MB
-DATA_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024  # 50MB
+# Per-file ceiling is enforced inside IssueViewSet (25 MB). The bigger numbers
+# below give comfortable headroom for posts that include several attachments
+# in a single multipart request.
+FILE_UPLOAD_MAX_MEMORY_SIZE = 30 * 1024 * 1024     # 30 MB held in RAM before spilling to disk
+DATA_UPLOAD_MAX_MEMORY_SIZE = 300 * 1024 * 1024    # ~300 MB combined POST body cap
+
+
+# AI moderation settings (used by core.spam_filter). Read at runtime via
+# decouple/os.environ so production can supply the key via real env vars.
+try:
+    from decouple import config as _decouple_config
+    OPENAI_API_KEY = _decouple_config('OPENAI_API_KEY', default=os.environ.get('OPENAI_API_KEY', ''))
+    OPENAI_SPAM_MODEL = _decouple_config('OPENAI_SPAM_MODEL', default=os.environ.get('OPENAI_SPAM_MODEL', 'gpt-4o-mini'))
+except Exception:
+    OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
+    OPENAI_SPAM_MODEL = os.environ.get('OPENAI_SPAM_MODEL', 'gpt-4o-mini')

@@ -555,7 +555,46 @@ export const adminAPI = {
       by_status: Record<string, number>;
       recent_7_days: number;
       pending_count: number;
+      spam_total: number;
+      spam_recent_7_days: number;
     }>('/admin/stats/');
+  },
+
+  getSpamReports: async (page?: number) => {
+    const query = page ? `?page=${page}` : '';
+    return apiRequest<{
+      count: number;
+      page: number;
+      page_size: number;
+      results: Array<{
+        id: number;
+        title: string;
+        description: string;
+        category_name: string | null;
+        location: { city: string | null; district: string | null; state: string | null };
+        spam_reason: string;
+        spam_score: number;
+        spam_checked_at: string | null;
+        created_at: string;
+        is_anonymous: boolean;
+        author: {
+          id: number | null;
+          username: string | null;
+          email: string | null;
+          full_name: string;
+          date_joined: string | null;
+          is_staff: boolean;
+          total_posts: number;
+          flagged_posts: number;
+        };
+      }>;
+    }>(`/admin/spam/${query}`);
+  },
+
+  unflagSpam: async (issueId: number) => {
+    return apiRequest<{ message: string; spam_status: string }>(`/admin/spam/${issueId}/unflag/`, {
+      method: 'POST',
+    });
   },
 
   getGrievances: async (params?: {

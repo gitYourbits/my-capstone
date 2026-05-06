@@ -7,6 +7,7 @@ import {
   ArrowLeft,
   ShieldCheck,
   Users,
+  ShieldAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -14,6 +15,7 @@ import { cn } from "@/lib/utils";
 const nav = [
   { to: "/admin", label: "Dashboard", icon: LayoutDashboard },
   { to: "/admin/grievances", label: "Grievances", icon: FileText },
+  { to: "/admin/spam", label: "Spam", icon: ShieldAlert },
   { to: "/admin/assignment", label: "Assignment", icon: Users },
 ];
 

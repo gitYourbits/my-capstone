@@ -8,6 +8,7 @@ from .views import (
     MediaViewSet, CommentViewSet, SearchView,
     AdminDashboardStatsView, AdminGrievanceViewSet,
     AdminStaffListView, AssignmentCategoryViewSet,
+    AdminSpamReportsView, AdminSpamUnflagView,
 )
 
 router = DefaultRouter()
@@ -32,6 +33,8 @@ urlpatterns = [
     path('auth/me/', CurrentUserView.as_view(), name='current_user'),
     path('admin/stats/', AdminDashboardStatsView.as_view(), name='admin_stats'),
     path('admin/staff/', AdminStaffListView.as_view(), name='admin_staff'),
+    path('admin/spam/', AdminSpamReportsView.as_view(), name='admin_spam_reports'),
+    path('admin/spam/<int:pk>/unflag/', AdminSpamUnflagView.as_view(), name='admin_spam_unflag'),
     path('admin/', include(admin_router.urls)),
     path('search/', SearchView.as_view(), name='search'),
     path('', include(router.urls)),

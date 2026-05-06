@@ -1,5 +1,10 @@
 venv/
 db.sqlite3
 media/
+
+# Python bytecode and caches (never commit)
 __pycache__/
 *.py[cod]
+*$py.class
+
+.env

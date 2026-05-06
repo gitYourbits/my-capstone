@@ -17,6 +17,7 @@ import AdminDashboard from "./pages/admin/AdminDashboard";
 import AdminGrievances from "./pages/admin/AdminGrievances";
 import AdminGrievanceDetail from "./pages/admin/AdminGrievanceDetail";
 import AdminAssignment from "./pages/admin/AdminAssignment";
+import AdminSpam from "./pages/admin/AdminSpam";
 
 const queryClient = new QueryClient();
 
@@ -39,6 +40,7 @@ const App = () => (
             <Route index element={<AdminDashboard />} />
             <Route path="grievances" element={<AdminGrievances />} />
             <Route path="grievances/:id" element={<AdminGrievanceDetail />} />
+            <Route path="spam" element={<AdminSpam />} />
             <Route path="assignment" element={<AdminAssignment />} />
           </Route>
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

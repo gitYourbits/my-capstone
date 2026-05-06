@@ -232,7 +232,8 @@ class IssueListSerializer(serializers.ModelSerializer):
             'category', 'category_name', 'location', 'tags', 'first_image',
             'upvotes_count', 'downvotes_count', 'comments_count', 'score',
             'status', 'scope', 'created_at', 'user_vote',
-            'assigned_to_name', 'workflow_stage', 'workflow_stage_label', 'is_owner', 'top_comments'
+            'assigned_to_name', 'workflow_stage', 'workflow_stage_label', 'is_owner', 'top_comments',
+            'spam_status', 'spam_reason'
         ]
 
     def get_assigned_to_name(self, obj):
@@ -320,7 +321,8 @@ class IssueDetailSerializer(serializers.ModelSerializer):
             'upvotes_count', 'downvotes_count', 'comments_count', 'views_count',
             'score', 'trending_score', 'status', 'scope', 'is_featured',
             'is_verified', 'created_at', 'updated_at', 'resolved_at', 'user_vote',
-            'assigned_to_name', 'workflow_stage', 'workflow_stage_label', 'workflow_transitions_public', 'is_owner'
+            'assigned_to_name', 'workflow_stage', 'workflow_stage_label', 'workflow_transitions_public', 'is_owner',
+            'spam_status', 'spam_reason'
         ]
 
     def get_assigned_to_name(self, obj):

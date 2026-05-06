@@ -130,19 +130,23 @@ const CreateIssue = () => {
     }
   };
 
+  // Single, consistent ceiling for all media types so users get a predictable
+  // limit. Backend enforces the same 25 MB cap server-side.
+  const MAX_FILE_MB = 25;
+
   const fileTypeConfig = {
     image: {
-      maxMB: 15,
+      maxMB: MAX_FILE_MB,
       accept: ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'],
       label: 'image'
     },
     video: {
-      maxMB: 80,
+      maxMB: MAX_FILE_MB,
       accept: ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/webm'],
       label: 'video'
     },
     audio: {
-      maxMB: 30,
+      maxMB: MAX_FILE_MB,
       accept: ['audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/mp4', 'audio/ogg'],
       label: 'audio'
     },
@@ -163,9 +167,10 @@ const CreateIssue = () => {
         continue;
       }
       if (!isAllowedSize) {
+        const sizeMB = (file.size / 1024 / 1024).toFixed(1);
         toast({
           title: "File too large",
-          description: `${file.name} exceeds ${config.maxMB} MB.`,
+          description: `"${file.name}" is ${sizeMB} MB. Each photo, video or voice note must be ${config.maxMB} MB or smaller. Please pick a smaller file and try again.`,
           variant: "destructive",
         });
         continue;
@@ -216,6 +221,19 @@ const CreateIssue = () => {
       };
 
       const response = await issueAPI.create(issueData, uploadedFiles);
+
+      if (response?.spam_blocked) {
+        toast({
+          title: "Post held back",
+          description:
+            response?.spam_reason
+              ? `Our content filter flagged this post as possible spam (reason: ${response.spam_reason}). Please retry with a genuine civic issue. You can review it in your profile under "Flagged".`
+              : 'Our content filter flagged this post as possible spam. Please retry with a genuine civic issue. You can review it in your profile under "Flagged".',
+          variant: "destructive",
+        });
+        navigate("/profile?tab=flagged");
+        return;
+      }
 
       if (response?.duplicate_submission) {
         toast({
@@ -414,6 +432,9 @@ const CreateIssue = () => {
               {/* Media Upload */}
               <div>
                 <Label>Evidence (Photos, Videos, Audio)</Label>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Up to {MAX_FILE_MB} MB per photo, video or voice note.
+                </p>
                 <div className="mt-2">
                   <div className="flex flex-wrap gap-2">
                     <label>
